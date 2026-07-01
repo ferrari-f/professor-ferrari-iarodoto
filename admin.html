@@ -95,8 +95,8 @@
   <div id="log"></div>
 
   <div id="downloadArea">
-    <p style="font-size:0.85rem;">Pronto. Escolha como salvar:</p>
-    <button id="autoSaveBtn">Salvar automaticamente no GitHub</button>
+    <p style="font-size:0.85rem;">Se o salvamento automático não estava configurado (ou algum lote falhou), use o botão abaixo como reforço/backup:</p>
+    <button id="autoSaveBtn">Tentar salvar tudo no GitHub agora</button>
     <button id="downloadBtn" class="secondary">Baixar knowledge.json (manual)</button>
     <div id="autoSaveStatus" style="font-size:0.82rem; margin-top:10px; color: var(--grey);"></div>
   </div>
@@ -201,6 +201,32 @@ async function embedBatch(texts, taskType) {
   return data.embeddings;
 }
 
+async function embedBatchWithRetry(texts, taskType, maxAttempts = 6) {
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await embedBatch(texts, taskType);
+    } catch (err) {
+      lastErr = err;
+      const wait = Math.min(10000 * attempt, 60000);
+      log(`  -> Limite momentâneo da API (tentativa ${attempt}/${maxAttempts}). Esperando ${wait / 1000}s...`);
+      await sleep(wait);
+    }
+  }
+  throw lastErr;
+}
+
+async function saveChunksToGithub(chunks, adminPassword) {
+  const res = await fetch('/api/save-knowledge', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ adminPassword, chunks }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Erro ao salvar no GitHub.');
+  return data;
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -284,31 +310,59 @@ processBtn.addEventListener('click', async () => {
     log('\nGerando embeddings (isso pode levar alguns minutos)...');
     const BATCH_SIZE = 50;
     const withEmbeddings = [];
+    let autoSaveAvailable = true;
+    let autoSaveTotal = null;
+
     for (let i = 0; i < allChunks.length; i += BATCH_SIZE) {
       const batch = allChunks.slice(i, i + BATCH_SIZE);
       let embeddings;
       try {
-        embeddings = await embedBatch(batch.map(c => c.text), 'RETRIEVAL_DOCUMENT');
+        embeddings = await embedBatchWithRetry(batch.map((c) => c.text), 'RETRIEVAL_DOCUMENT');
       } catch (err) {
-        log(`  -> Falhou neste lote (${err.message}). Esperando 20s (limite de chamadas por minuto)...`);
-        await sleep(20000);
-        embeddings = await embedBatch(batch.map(c => c.text), 'RETRIEVAL_DOCUMENT');
+        log(`  -> Não consegui gerar embeddings para este lote (${err.message}). Pulando ${batch.length} trechos — você pode tentar de novo depois.`);
+        continue;
       }
-      batch.forEach((c, idx) => {
-        withEmbeddings.push({
-          id: `chunk_${existingChunks.length + withEmbeddings.length}`,
-          source: c.source,
-          text: c.text,
-          embedding: embeddings[idx],
-        });
-      });
-      log(`  -> ${Math.min(i + BATCH_SIZE, allChunks.length)}/${allChunks.length} processados`);
+
+      const batchWithEmb = batch.map((c, idx) => ({ source: c.source, text: c.text, embedding: embeddings[idx] }));
+      withEmbeddings.push(...batchWithEmb);
+      const progress = `${Math.min(i + BATCH_SIZE, allChunks.length)}/${allChunks.length}`;
+
+      if (autoSaveAvailable) {
+        try {
+          const result = await saveChunksToGithub(batchWithEmb, adminPasswordInput.value);
+          autoSaveTotal = result.totalChunks;
+          log(`  -> ${progress} processados e já salvos no GitHub (total atual: ${autoSaveTotal}).`);
+        } catch (err) {
+          if (/GITHUB_TOKEN|GITHUB_REPO/.test(err.message)) {
+            autoSaveAvailable = false;
+            log(`  -> Salvamento automático não está configurado (${err.message}). Vou guardar tudo para você baixar manualmente no final.`);
+          } else {
+            log(`  -> Falhou ao salvar este lote no GitHub (${err.message}). Tentando de novo em 10s...`);
+            await sleep(10000);
+            try {
+              const result = await saveChunksToGithub(batchWithEmb, adminPasswordInput.value);
+              autoSaveTotal = result.totalChunks;
+              log(`  -> ${progress} salvos no GitHub (total atual: ${autoSaveTotal}).`);
+            } catch (err2) {
+              log(`  -> Falhou de novo (${err2.message}). Este lote fica disponível só no download manual, no final.`);
+            }
+          }
+        }
+      } else {
+        log(`  -> ${progress} processados (guardado para download manual).`);
+      }
+
       await sleep(1500);
     }
 
     finalKnowledgeBase = existingChunks.concat(withEmbeddings);
     newlyGeneratedChunks = withEmbeddings;
-    log(`\nConcluído! ${withEmbeddings.length} trechos novos + ${existingChunks.length} já existentes = ${finalKnowledgeBase.length} no total.`);
+
+    if (autoSaveAvailable && autoSaveTotal !== null) {
+      log(`\nConcluído! Tudo já foi salvo automaticamente no GitHub ao longo do processo (total agora: ${autoSaveTotal} trechos). A Vercel publica sozinha em ~1 minuto.`);
+    } else {
+      log(`\nConcluído! ${withEmbeddings.length} trechos novos + ${existingChunks.length} já existentes = ${finalKnowledgeBase.length} no total.`);
+    }
     downloadArea.classList.add('visible');
 
   } catch (err) {
