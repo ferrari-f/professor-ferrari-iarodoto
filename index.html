@@ -179,6 +179,41 @@
   }
 
   #fileInput { display: none; }
+
+  #attachmentBar {
+    display: none;
+    align-items: center;
+    gap: 10px;
+    max-width: 720px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 8px 20px 0;
+  }
+
+  #attachmentBar.visible { display: flex; }
+
+  #attachmentBar img {
+    width: 44px;
+    height: 44px;
+    object-fit: cover;
+    border: 2px solid var(--yellow);
+  }
+
+  #attachmentBar span {
+    font-family: 'Saira', sans-serif;
+    font-size: 0.8rem;
+    color: var(--grey);
+  }
+
+  #attachmentBar button {
+    background: none;
+    border: 1px solid var(--red);
+    color: var(--red);
+    font-family: 'Saira', sans-serif;
+    font-size: 0.75rem;
+    padding: 4px 10px;
+    cursor: pointer;
+  }
 </style>
 </head>
 <body>
@@ -195,10 +230,16 @@
   <div class="msg bot">Envie uma pergunta, um resumo para revisar, ou uma foto de um exercício/texto para eu transcrever e comentar.</div>
 </div>
 
+<div id="attachmentBar">
+  <img id="attachmentThumb" src="" alt="Imagem anexada" />
+  <span>Imagem anexada</span>
+  <button id="removeAttachment" type="button">Remover</button>
+</div>
+
 <form id="composer">
   <input type="file" id="fileInput" accept="image/*" />
   <label class="iconBtn" for="fileInput" title="Anexar imagem">📷</label>
-  <textarea id="textInput" placeholder="Digite sua pergunta..." rows="1"></textarea>
+  <textarea id="textInput" placeholder="Digite sua pergunta ou cole (Ctrl+V) um print..." rows="1"></textarea>
   <button id="sendBtn" type="submit">Enviar</button>
 </form>
 
@@ -209,19 +250,53 @@ const textInput = document.getElementById('textInput');
 const fileInput = document.getElementById('fileInput');
 const sendBtn = document.getElementById('sendBtn');
 const searchToggle = document.getElementById('searchToggle');
+const attachmentBar = document.getElementById('attachmentBar');
+const attachmentThumb = document.getElementById('attachmentThumb');
+const removeAttachmentBtn = document.getElementById('removeAttachment');
 
 let history = [];
 let pendingImage = null; // { base64, mimeType }
 
-fileInput.addEventListener('change', () => {
-  const file = fileInput.files[0];
-  if (!file) return;
+function setAttachment(file) {
   const reader = new FileReader();
   reader.onload = () => {
     const base64 = reader.result.split(',')[1];
     pendingImage = { base64, mimeType: file.type };
+    attachmentThumb.src = reader.result;
+    attachmentBar.classList.add('visible');
   };
   reader.readAsDataURL(file);
+}
+
+function clearAttachment() {
+  pendingImage = null;
+  attachmentThumb.src = '';
+  attachmentBar.classList.remove('visible');
+  fileInput.value = '';
+}
+
+fileInput.addEventListener('change', () => {
+  const file = fileInput.files[0];
+  if (!file) return;
+  setAttachment(file);
+});
+
+removeAttachmentBtn.addEventListener('click', clearAttachment);
+
+// Permite colar (Ctrl+V / Cmd+V) uma imagem copiada (print, screenshot) direto no campo
+textInput.addEventListener('paste', (e) => {
+  const items = e.clipboardData && e.clipboardData.items;
+  if (!items) return;
+  for (const item of items) {
+    if (item.type && item.type.startsWith('image/')) {
+      const file = item.getAsFile();
+      if (file) {
+        setAttachment(file);
+        e.preventDefault();
+      }
+      break;
+    }
+  }
 });
 
 function addMessage(role, text, imageDataUrl) {
@@ -254,8 +329,7 @@ form.addEventListener('submit', async (e) => {
 
   sendBtn.disabled = true;
   const imageToSend = pendingImage;
-  pendingImage = null;
-  fileInput.value = '';
+  clearAttachment();
   textInput.value = '';
 
   try {
