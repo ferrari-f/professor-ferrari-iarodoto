@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Saira:wght@700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
 <style>
   :root {
     --grey: #999395; --offwhite: #f1f1f1; --black: #0d0d0d;
@@ -76,8 +77,11 @@
   <div class="card">
     <label for="pdfFiles">1. Selecione os PDFs (pode escolher vários, ou só 1 de cada vez)</label>
     <input type="file" id="pdfFiles" accept="application/pdf" multiple />
-    <div class="warn">Cada arquivo deve ter no máximo ~4 MB. Se um PDF for maior, divida em partes (ex.: por capítulo) antes de subir.</div>
     <div class="filelist" id="fileList"></div>
+    <div style="margin-top:12px; display:flex; align-items:center; gap:8px;">
+      <input type="checkbox" id="useOcr" style="accent-color: var(--yellow); width:15px; height:15px;" />
+      <label for="useOcr" style="margin:0; font-weight:500; font-size:0.82rem;">Estes PDFs são digitalizados/escaneados (fotos de página) — usar leitura por IA (mais lento, máx. ~4 MB por arquivo)</label>
+    </div>
   </div>
 
   <div class="card">
@@ -109,6 +113,22 @@ const adminPasswordInput = document.getElementById('adminPassword');
 
 const existingKnowledgeInput = document.getElementById('existingKnowledge');
 const existingKnowledgeInfo = document.getElementById('existingKnowledgeInfo');
+const useOcrCheckbox = document.getElementById('useOcr');
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+
+async function extractTextClientSide(file) {
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  let fullText = '';
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const pageText = content.items.map((item) => item.str).join(' ');
+    fullText += pageText + '\n\n';
+  }
+  return fullText.trim();
+}
 
 let existingChunks = [];
 
@@ -182,7 +202,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function extractFile(file, adminPassword) {
+async function extractFileServer(file, adminPassword) {
   const base64 = await fileToBase64(file);
   const res = await fetch('/api/extract', {
     method: 'POST',
@@ -211,21 +231,34 @@ processBtn.addEventListener('click', async () => {
     for (const file of files) {
       log(`Lendo ${file.name}...`);
       let text;
-      try {
-        text = await extractFile(file, adminPasswordInput.value);
-      } catch (err) {
-        log(`  -> Falhou (${err.message}). Tentando de novo em 8s...`);
-        await sleep(8000);
+      if (useOcrCheckbox.checked) {
         try {
-          text = await extractFile(file, adminPasswordInput.value);
-        } catch (err2) {
-          log(`  -> Falhou de novo: ${err2.message}. Pulando este arquivo.`);
+          text = await extractFileServer(file, adminPasswordInput.value);
+        } catch (err) {
+          log(`  -> Falhou (${err.message}). Tentando de novo em 8s...`);
+          await sleep(8000);
+          try {
+            text = await extractFileServer(file, adminPasswordInput.value);
+          } catch (err2) {
+            log(`  -> Falhou de novo: ${err2.message}. Pulando este arquivo.`);
+            continue;
+          }
+        }
+        await sleep(3000); // evita bater no limite de chamadas por minuto da API
+      } else {
+        try {
+          text = await extractTextClientSide(file);
+        } catch (err) {
+          log(`  -> Falhou ao ler o PDF (${err.message}). Pulando este arquivo.`);
+          continue;
+        }
+        if (!text || text.length < 200) {
+          log(`  -> Pouco ou nenhum texto encontrado. Se este PDF for escaneado (imagem), marque a opção de OCR acima e tente de novo só com ele. Pulando por ora.`);
           continue;
         }
       }
       rawSources.push({ source: file.name, text });
       log(`  -> ${text.length} caracteres extraídos.`);
-      await sleep(3000); // evita bater no limite de chamadas por minuto da API
     }
 
     if (pastedTextEl.value.trim()) {
