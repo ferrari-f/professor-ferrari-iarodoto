@@ -3,6 +3,7 @@
   "functions": {
     "api/extract.js": { "maxDuration": 60 },
     "api/embed.js": { "maxDuration": 60 },
-    "api/chat.js": { "maxDuration": 60 }
+    "api/chat.js": { "maxDuration": 60 },
+    "api/save-knowledge.js": { "maxDuration": 30 }
   }
 }

@@ -95,8 +95,10 @@
   <div id="log"></div>
 
   <div id="downloadArea">
-    <p style="font-size:0.85rem;">Pronto. Baixe o arquivo abaixo e suba no GitHub substituindo <code>api/knowledge.json</code>.</p>
-    <button id="downloadBtn">Baixar knowledge.json</button>
+    <p style="font-size:0.85rem;">Pronto. Escolha como salvar:</p>
+    <button id="autoSaveBtn">Salvar automaticamente no GitHub</button>
+    <button id="downloadBtn" class="secondary">Baixar knowledge.json (manual)</button>
+    <div id="autoSaveStatus" style="font-size:0.82rem; margin-top:10px; color: var(--grey);"></div>
   </div>
 </div>
 
@@ -148,6 +150,7 @@ existingKnowledgeInput.addEventListener('change', async () => {
 });
 
 let finalKnowledgeBase = [];
+let newlyGeneratedChunks = [];
 
 pdfFilesInput.addEventListener('change', () => {
   const names = Array.from(pdfFilesInput.files).map(f => `${f.name} (${(f.size/1024/1024).toFixed(2)} MB)`);
@@ -279,7 +282,7 @@ processBtn.addEventListener('click', async () => {
     log(`Total: ${allChunks.length} trechos.`);
 
     log('\nGerando embeddings (isso pode levar alguns minutos)...');
-    const BATCH_SIZE = 10;
+    const BATCH_SIZE = 50;
     const withEmbeddings = [];
     for (let i = 0; i < allChunks.length; i += BATCH_SIZE) {
       const batch = allChunks.slice(i, i + BATCH_SIZE);
@@ -287,8 +290,8 @@ processBtn.addEventListener('click', async () => {
       try {
         embeddings = await embedBatch(batch.map(c => c.text), 'RETRIEVAL_DOCUMENT');
       } catch (err) {
-        log(`  -> Falhou neste lote (${err.message}). Tentando de novo em 8s...`);
-        await sleep(8000);
+        log(`  -> Falhou neste lote (${err.message}). Esperando 20s (limite de chamadas por minuto)...`);
+        await sleep(20000);
         embeddings = await embedBatch(batch.map(c => c.text), 'RETRIEVAL_DOCUMENT');
       }
       batch.forEach((c, idx) => {
@@ -300,10 +303,11 @@ processBtn.addEventListener('click', async () => {
         });
       });
       log(`  -> ${Math.min(i + BATCH_SIZE, allChunks.length)}/${allChunks.length} processados`);
-      await sleep(1000);
+      await sleep(1500);
     }
 
     finalKnowledgeBase = existingChunks.concat(withEmbeddings);
+    newlyGeneratedChunks = withEmbeddings;
     log(`\nConcluído! ${withEmbeddings.length} trechos novos + ${existingChunks.length} já existentes = ${finalKnowledgeBase.length} no total.`);
     downloadArea.classList.add('visible');
 
@@ -322,6 +326,33 @@ downloadBtn.addEventListener('click', () => {
   a.download = 'knowledge.json';
   a.click();
   URL.revokeObjectURL(url);
+});
+
+const autoSaveBtn = document.getElementById('autoSaveBtn');
+const autoSaveStatus = document.getElementById('autoSaveStatus');
+
+autoSaveBtn.addEventListener('click', async () => {
+  autoSaveBtn.disabled = true;
+  autoSaveStatus.textContent = 'Salvando no GitHub...';
+  try {
+    const res = await fetch('/api/save-knowledge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        adminPassword: adminPasswordInput.value,
+        chunks: newlyGeneratedChunks,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Erro ao salvar.');
+    autoSaveStatus.textContent = `Salvo! Base agora tem ${data.totalChunks} trechos no total. A Vercel vai publicar sozinha em ~1 minuto.`;
+    autoSaveStatus.style.color = '#3ddc73';
+  } catch (err) {
+    autoSaveStatus.textContent = `Erro: ${err.message}`;
+    autoSaveStatus.style.color = 'var(--red)';
+  } finally {
+    autoSaveBtn.disabled = false;
+  }
 });
 </script>
 </body>
