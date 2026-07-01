@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Iaródoto — Admin de Materiais</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Saira:wght@700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --grey: #999395; --offwhite: #f1f1f1; --black: #0d0d0d;
+    --card: #18181b; --yellow: #ffde59; --red: #d51818; --blue: #2f6fd6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--black); color: var(--offwhite);
+    font-family: 'Inter', sans-serif; min-height: 100vh; padding: 32px 20px;
+  }
+  .wrap { max-width: 680px; margin: 0 auto; }
+  h1 {
+    font-family: 'Saira', sans-serif; font-weight: 800; font-size: 1.3rem;
+    margin: 0 0 4px;
+  }
+  p.sub { color: var(--grey); font-size: 0.85rem; margin: 0 0 28px; }
+  .card {
+    background: var(--card); border-radius: 16px; padding: 20px;
+    margin-bottom: 16px; border: 1px solid rgba(255,255,255,0.06);
+  }
+  label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 8px; }
+  input[type="password"], textarea {
+    width: 100%; background: #0d0d0d; border: 1px solid rgba(255,255,255,0.12);
+    color: var(--offwhite); border-radius: 10px; padding: 10px 12px;
+    font-family: 'Inter', sans-serif; font-size: 0.9rem;
+  }
+  textarea { min-height: 100px; resize: vertical; }
+  input[type="file"] { font-size: 0.85rem; color: var(--grey); }
+  .filelist { margin-top: 10px; font-size: 0.82rem; color: var(--grey); }
+  button {
+    background: var(--yellow); color: var(--black); border: none;
+    font-weight: 700; padding: 12px 20px; border-radius: 12px;
+    cursor: pointer; font-size: 0.88rem; margin-top: 14px;
+  }
+  button:disabled { background: #3a3a3a; color: var(--grey); cursor: not-allowed; }
+  button.secondary {
+    background: transparent; border: 1px solid var(--grey); color: var(--offwhite);
+  }
+  #log {
+    background: #0d0d0d; border-radius: 10px; padding: 14px;
+    font-family: monospace; font-size: 0.78rem; color: var(--grey);
+    max-height: 260px; overflow-y: auto; white-space: pre-wrap; margin-top: 14px;
+    display: none;
+  }
+  #log.visible { display: block; }
+  #downloadArea { display: none; margin-top: 14px; }
+  #downloadArea.visible { display: block; }
+  .warn { font-size: 0.78rem; color: var(--yellow); margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Admin — base de conhecimento do Iaródoto</h1>
+  <p class="sub">Página só para você. Processa PDFs e gera o arquivo que alimenta as respostas.</p>
+
+  <div class="card">
+    <label for="adminPassword">Senha de administrador (se você configurou uma)</label>
+    <input type="password" id="adminPassword" placeholder="Deixe em branco se não configurou" />
+  </div>
+
+  <div class="card">
+    <label for="pdfFiles">1. Selecione os PDFs (pode escolher vários de uma vez)</label>
+    <input type="file" id="pdfFiles" accept="application/pdf" multiple />
+    <div class="warn">Cada arquivo deve ter no máximo ~4 MB. Se um PDF for maior, divida em partes (ex.: por capítulo) antes de subir.</div>
+    <div class="filelist" id="fileList"></div>
+  </div>
+
+  <div class="card">
+    <label for="pastedText">2. (Opcional) Cole texto direto aqui também</label>
+    <textarea id="pastedText" placeholder="Cole aqui qualquer texto adicional (resumos, listas de autores, etc.)"></textarea>
+  </div>
+
+  <button id="processBtn">Processar e gerar base de conhecimento</button>
+  <button id="clearLogBtn" class="secondary" style="display:none;">Limpar log</button>
+
+  <div id="log"></div>
+
+  <div id="downloadArea">
+    <p style="font-size:0.85rem;">Pronto. Baixe o arquivo abaixo e suba no GitHub substituindo <code>api/knowledge.json</code>.</p>
+    <button id="downloadBtn">Baixar knowledge.json</button>
+  </div>
+</div>
+
+<script>
+const pdfFilesInput = document.getElementById('pdfFiles');
+const fileListEl = document.getElementById('fileList');
+const pastedTextEl = document.getElementById('pastedText');
+const processBtn = document.getElementById('processBtn');
+const clearLogBtn = document.getElementById('clearLogBtn');
+const logEl = document.getElementById('log');
+const downloadArea = document.getElementById('downloadArea');
+const downloadBtn = document.getElementById('downloadBtn');
+const adminPasswordInput = document.getElementById('adminPassword');
+
+let finalKnowledgeBase = [];
+
+pdfFilesInput.addEventListener('change', () => {
+  const names = Array.from(pdfFilesInput.files).map(f => `${f.name} (${(f.size/1024/1024).toFixed(2)} MB)`);
+  fileListEl.textContent = names.join(', ') || '';
+});
+
+function log(msg) {
+  logEl.classList.add('visible');
+  logEl.textContent += msg + '\n';
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function chunkText(text, source, maxLen = 1200, overlap = 150) {
+  const clean = text.replace(/\r\n/g, '\n').trim();
+  const chunks = [];
+  let start = 0;
+  while (start < clean.length) {
+    let end = Math.min(start + maxLen, clean.length);
+    if (end < clean.length) {
+      const lastBreak = clean.lastIndexOf('\n\n', end);
+      if (lastBreak > start + maxLen * 0.5) end = lastBreak;
+    }
+    const chunk = clean.slice(start, end).trim();
+    if (chunk.length > 30) chunks.push({ source, text: chunk });
+    if (end >= clean.length) break;
+    start = end - overlap;
+  }
+  return chunks;
+}
+
+async function embedBatch(texts, taskType) {
+  const res = await fetch('/api/embed', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ texts, taskType, adminPassword: adminPasswordInput.value }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Erro ao gerar embeddings');
+  return data.embeddings;
+}
+
+processBtn.addEventListener('click', async () => {
+  processBtn.disabled = true;
+  logEl.textContent = '';
+  downloadArea.classList.remove('visible');
+
+  try {
+    const rawSources = []; // { source, text }
+    const files = Array.from(pdfFilesInput.files);
+
+    for (const file of files) {
+      log(`Lendo ${file.name}...`);
+      const base64 = await fileToBase64(file);
+      const res = await fetch('/api/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileBase64: base64, mimeType: file.type, adminPassword: adminPasswordInput.value }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(`${file.name}: ${data.error}`);
+      rawSources.push({ source: file.name, text: data.text });
+      log(`  -> ${data.text.length} caracteres extraídos.`);
+    }
+
+    if (pastedTextEl.value.trim()) {
+      rawSources.push({ source: 'Texto colado manualmente', text: pastedTextEl.value.trim() });
+    }
+
+    if (rawSources.length === 0) {
+      log('Nenhum arquivo ou texto para processar.');
+      processBtn.disabled = false;
+      return;
+    }
+
+    log('\nDividindo em trechos...');
+    let allChunks = [];
+    for (const src of rawSources) {
+      allChunks = allChunks.concat(chunkText(src.text, src.source));
+    }
+    log(`Total: ${allChunks.length} trechos.`);
+
+    log('\nGerando embeddings (isso pode levar alguns minutos)...');
+    const BATCH_SIZE = 10;
+    const withEmbeddings = [];
+    for (let i = 0; i < allChunks.length; i += BATCH_SIZE) {
+      const batch = allChunks.slice(i, i + BATCH_SIZE);
+      const embeddings = await embedBatch(batch.map(c => c.text), 'RETRIEVAL_DOCUMENT');
+      batch.forEach((c, idx) => {
+        withEmbeddings.push({
+          id: `chunk_${withEmbeddings.length}`,
+          source: c.source,
+          text: c.text,
+          embedding: embeddings[idx],
+        });
+      });
+      log(`  -> ${Math.min(i + BATCH_SIZE, allChunks.length)}/${allChunks.length} processados`);
+    }
+
+    finalKnowledgeBase = withEmbeddings;
+    log(`\nConcluído! ${finalKnowledgeBase.length} trechos indexados.`);
+    downloadArea.classList.add('visible');
+
+  } catch (err) {
+    log(`\nERRO: ${err.message}`);
+  } finally {
+    processBtn.disabled = false;
+  }
+});
+
+downloadBtn.addEventListener('click', () => {
+  const blob = new Blob([JSON.stringify(finalKnowledgeBase, null, 0)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'knowledge.json';
+  a.click();
+  URL.revokeObjectURL(url);
+});
+</script>
+</body>
+</html>
