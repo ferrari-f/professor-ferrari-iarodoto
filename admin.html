@@ -310,8 +310,6 @@ processBtn.addEventListener('click', async () => {
     log('\nGerando embeddings (isso pode levar alguns minutos)...');
     const BATCH_SIZE = 50;
     const withEmbeddings = [];
-    let autoSaveAvailable = true;
-    let autoSaveTotal = null;
 
     for (let i = 0; i < allChunks.length; i += BATCH_SIZE) {
       const batch = allChunks.slice(i, i + BATCH_SIZE);
@@ -322,46 +320,32 @@ processBtn.addEventListener('click', async () => {
         log(`  -> Não consegui gerar embeddings para este lote (${err.message}). Pulando ${batch.length} trechos — você pode tentar de novo depois.`);
         continue;
       }
-
-      const batchWithEmb = batch.map((c, idx) => ({ source: c.source, text: c.text, embedding: embeddings[idx] }));
-      withEmbeddings.push(...batchWithEmb);
-      const progress = `${Math.min(i + BATCH_SIZE, allChunks.length)}/${allChunks.length}`;
-
-      if (autoSaveAvailable) {
-        try {
-          const result = await saveChunksToGithub(batchWithEmb, adminPasswordInput.value);
-          autoSaveTotal = result.totalChunks;
-          log(`  -> ${progress} processados e já salvos no GitHub (total atual: ${autoSaveTotal}).`);
-        } catch (err) {
-          if (/GITHUB_TOKEN|GITHUB_REPO/.test(err.message)) {
-            autoSaveAvailable = false;
-            log(`  -> Salvamento automático não está configurado (${err.message}). Vou guardar tudo para você baixar manualmente no final.`);
-          } else {
-            log(`  -> Falhou ao salvar este lote no GitHub (${err.message}). Tentando de novo em 10s...`);
-            await sleep(10000);
-            try {
-              const result = await saveChunksToGithub(batchWithEmb, adminPasswordInput.value);
-              autoSaveTotal = result.totalChunks;
-              log(`  -> ${progress} salvos no GitHub (total atual: ${autoSaveTotal}).`);
-            } catch (err2) {
-              log(`  -> Falhou de novo (${err2.message}). Este lote fica disponível só no download manual, no final.`);
-            }
-          }
-        }
-      } else {
-        log(`  -> ${progress} processados (guardado para download manual).`);
-      }
-
+      withEmbeddings.push(...batch.map((c, idx) => ({ source: c.source, text: c.text, embedding: embeddings[idx] })));
+      log(`  -> ${Math.min(i + BATCH_SIZE, allChunks.length)}/${allChunks.length} processados (guardado na memória, ainda não salvo).`);
       await sleep(1500);
     }
 
     finalKnowledgeBase = existingChunks.concat(withEmbeddings);
     newlyGeneratedChunks = withEmbeddings;
 
-    if (autoSaveAvailable && autoSaveTotal !== null) {
-      log(`\nConcluído! Tudo já foi salvo automaticamente no GitHub ao longo do processo (total agora: ${autoSaveTotal} trechos). A Vercel publica sozinha em ~1 minuto.`);
-    } else {
-      log(`\nConcluído! ${withEmbeddings.length} trechos novos + ${existingChunks.length} já existentes = ${finalKnowledgeBase.length} no total.`);
+    log(`\n${withEmbeddings.length} trechos prontos. Salvando tudo no GitHub de uma vez só...`);
+
+    try {
+      const result = await saveChunksToGithub(withEmbeddings, adminPasswordInput.value);
+      log(`Concluído! Salvo no GitHub com sucesso — total agora: ${result.totalChunks} trechos. A Vercel publica sozinha em ~1 minuto.`);
+    } catch (err) {
+      if (/GITHUB_TOKEN|GITHUB_REPO/.test(err.message)) {
+        log(`Salvamento automático não está configurado (${err.message}). Use o botão "Baixar knowledge.json (manual)" abaixo.`);
+      } else {
+        log(`Falhou ao salvar no GitHub (${err.message}). Tentando de novo em 10s...`);
+        await sleep(10000);
+        try {
+          const result = await saveChunksToGithub(withEmbeddings, adminPasswordInput.value);
+          log(`Concluído! Salvo no GitHub com sucesso — total agora: ${result.totalChunks} trechos.`);
+        } catch (err2) {
+          log(`Falhou de novo (${err2.message}). Use o botão "Tentar salvar tudo no GitHub agora" abaixo, ou baixe manualmente.`);
+        }
+      }
     }
     downloadArea.classList.add('visible');
 
