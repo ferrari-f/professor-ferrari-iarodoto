@@ -68,7 +68,13 @@
   </div>
 
   <div class="card">
-    <label for="pdfFiles">1. Selecione os PDFs (pode escolher vários de uma vez)</label>
+    <label for="existingKnowledge">0. (Opcional) Carregue a base de conhecimento atual, para somar o material novo a ela</label>
+    <input type="file" id="existingKnowledge" accept="application/json" />
+    <div class="warn" id="existingKnowledgeInfo"></div>
+  </div>
+
+  <div class="card">
+    <label for="pdfFiles">1. Selecione os PDFs (pode escolher vários, ou só 1 de cada vez)</label>
     <input type="file" id="pdfFiles" accept="application/pdf" multiple />
     <div class="warn">Cada arquivo deve ter no máximo ~4 MB. Se um PDF for maior, divida em partes (ex.: por capítulo) antes de subir.</div>
     <div class="filelist" id="fileList"></div>
@@ -100,6 +106,26 @@ const logEl = document.getElementById('log');
 const downloadArea = document.getElementById('downloadArea');
 const downloadBtn = document.getElementById('downloadBtn');
 const adminPasswordInput = document.getElementById('adminPassword');
+
+const existingKnowledgeInput = document.getElementById('existingKnowledge');
+const existingKnowledgeInfo = document.getElementById('existingKnowledgeInfo');
+
+let existingChunks = [];
+
+existingKnowledgeInput.addEventListener('change', async () => {
+  const file = existingKnowledgeInput.files[0];
+  if (!file) { existingChunks = []; existingKnowledgeInfo.textContent = ''; return; }
+  try {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    if (!Array.isArray(parsed)) throw new Error('Formato inválido');
+    existingChunks = parsed;
+    existingKnowledgeInfo.textContent = `Carregado: ${existingChunks.length} trechos já existentes. O material novo será somado a estes.`;
+  } catch (err) {
+    existingChunks = [];
+    existingKnowledgeInfo.textContent = 'Não consegui ler esse arquivo — confira se é o knowledge.json correto.';
+  }
+});
 
 let finalKnowledgeBase = [];
 
@@ -152,6 +178,27 @@ async function embedBatch(texts, taskType) {
   return data.embeddings;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function extractFile(file, adminPassword) {
+  const base64 = await fileToBase64(file);
+  const res = await fetch('/api/extract', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fileBase64: base64, mimeType: file.type, adminPassword }),
+  });
+  let data;
+  try {
+    data = await res.json();
+  } catch (e) {
+    throw new Error('O servidor demorou demais ou travou (tente novamente em instantes).');
+  }
+  if (!res.ok) throw new Error(data.error || 'Falha ao ler o arquivo.');
+  return data.text;
+}
+
 processBtn.addEventListener('click', async () => {
   processBtn.disabled = true;
   logEl.textContent = '';
@@ -163,16 +210,22 @@ processBtn.addEventListener('click', async () => {
 
     for (const file of files) {
       log(`Lendo ${file.name}...`);
-      const base64 = await fileToBase64(file);
-      const res = await fetch('/api/extract', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileBase64: base64, mimeType: file.type, adminPassword: adminPasswordInput.value }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(`${file.name}: ${data.error}`);
-      rawSources.push({ source: file.name, text: data.text });
-      log(`  -> ${data.text.length} caracteres extraídos.`);
+      let text;
+      try {
+        text = await extractFile(file, adminPasswordInput.value);
+      } catch (err) {
+        log(`  -> Falhou (${err.message}). Tentando de novo em 8s...`);
+        await sleep(8000);
+        try {
+          text = await extractFile(file, adminPasswordInput.value);
+        } catch (err2) {
+          log(`  -> Falhou de novo: ${err2.message}. Pulando este arquivo.`);
+          continue;
+        }
+      }
+      rawSources.push({ source: file.name, text });
+      log(`  -> ${text.length} caracteres extraídos.`);
+      await sleep(3000); // evita bater no limite de chamadas por minuto da API
     }
 
     if (pastedTextEl.value.trim()) {
@@ -197,20 +250,28 @@ processBtn.addEventListener('click', async () => {
     const withEmbeddings = [];
     for (let i = 0; i < allChunks.length; i += BATCH_SIZE) {
       const batch = allChunks.slice(i, i + BATCH_SIZE);
-      const embeddings = await embedBatch(batch.map(c => c.text), 'RETRIEVAL_DOCUMENT');
+      let embeddings;
+      try {
+        embeddings = await embedBatch(batch.map(c => c.text), 'RETRIEVAL_DOCUMENT');
+      } catch (err) {
+        log(`  -> Falhou neste lote (${err.message}). Tentando de novo em 8s...`);
+        await sleep(8000);
+        embeddings = await embedBatch(batch.map(c => c.text), 'RETRIEVAL_DOCUMENT');
+      }
       batch.forEach((c, idx) => {
         withEmbeddings.push({
-          id: `chunk_${withEmbeddings.length}`,
+          id: `chunk_${existingChunks.length + withEmbeddings.length}`,
           source: c.source,
           text: c.text,
           embedding: embeddings[idx],
         });
       });
       log(`  -> ${Math.min(i + BATCH_SIZE, allChunks.length)}/${allChunks.length} processados`);
+      await sleep(1000);
     }
 
-    finalKnowledgeBase = withEmbeddings;
-    log(`\nConcluído! ${finalKnowledgeBase.length} trechos indexados.`);
+    finalKnowledgeBase = existingChunks.concat(withEmbeddings);
+    log(`\nConcluído! ${withEmbeddings.length} trechos novos + ${existingChunks.length} já existentes = ${finalKnowledgeBase.length} no total.`);
     downloadArea.classList.add('visible');
 
   } catch (err) {
