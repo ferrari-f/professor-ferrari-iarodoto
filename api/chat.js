@@ -1,5 +1,38 @@
 import { GoogleGenAI } from "@google/genai";
 import { MATERIAIS } from "./materiais.js";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+let knowledgeBase = [];
+try {
+  const raw = fs.readFileSync(path.join(__dirname, "knowledge.json"), "utf-8");
+  knowledgeBase = JSON.parse(raw);
+} catch (e) {
+  knowledgeBase = [];
+}
+
+function cosineSimilarity(a, b) {
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB) || 1);
+}
+
+function retrieveRelevantChunks(queryEmbedding, topK = 5) {
+  if (!knowledgeBase.length) return [];
+  const scored = knowledgeBase.map((chunk) => ({
+    ...chunk,
+    score: cosineSimilarity(queryEmbedding, chunk.embedding),
+  }));
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, topK);
+}
 
 const SYSTEM_INSTRUCTION = `
 Você é o "Professor Ferrari", professor de História, Filosofia e Sociologia,
@@ -9,7 +42,7 @@ REGRAS DE ESTILO — sem exceção:
 - Rigor acadêmico acima de simpatia. Corrija erros conceituais de forma direta, sem suavizar.
 - Diferencie sempre fonte primária de interpretação historiográfica.
 - Cite autores e obras específicas quando pertinente (ex.: "conforme Hobsbawm, em A Era dos Extremos...").
-- Estilo factual, sóbrio, conciso e conceitualmente denso.
+- Estilo factual, simpático, conciso e conceitualmente denso.
 - PROIBIDO usar: "fascinante", "incrível", "revolucionário" (fora de contexto histórico técnico),
   "jornada", "mergulho profundo", perguntas retóricas, exclamações, introduções prolixas.
 - Demonstre a relevância de um tema com dados, consequências demográficas, tratados ou mudanças
@@ -44,6 +77,27 @@ export default async function handler(req, res) {
   try {
     const ai = new GoogleGenAI({ apiKey });
 
+    let retrievedContext = "";
+    if (message && knowledgeBase.length > 0) {
+      try {
+        const embedRes = await ai.models.embedContent({
+          model: "gemini-embedding-001",
+          contents: message,
+          config: { taskType: "RETRIEVAL_QUERY" },
+        });
+        const queryEmbedding = embedRes.embeddings[0].values;
+        const topChunks = retrieveRelevantChunks(queryEmbedding, 5);
+        if (topChunks.length) {
+          retrievedContext = topChunks
+            .map((c) => `[Fonte: ${c.source}]\n${c.text}`)
+            .join("\n\n---\n\n");
+        }
+      } catch (e) {
+        console.error("Erro na busca no material:", e);
+        // segue sem contexto recuperado — não interrompe a conversa
+      }
+    }
+
     const parts = [];
     if (message) parts.push({ text: message });
     if (imageBase64) {
@@ -60,7 +114,13 @@ export default async function handler(req, res) {
 
     const contents = [...trimmedHistory, { role: "user", parts }];
 
-    const config = { systemInstruction: SYSTEM_INSTRUCTION };
+    const config = {
+      systemInstruction:
+        SYSTEM_INSTRUCTION +
+        (retrievedContext
+          ? `\n\nTRECHOS RELEVANTES DO MATERIAL DO PROFESSOR PARA ESTA PERGUNTA (priorize isso):\n${retrievedContext}`
+          : ""),
+    };
     if (useSearch) {
       config.tools = [{ googleSearch: {} }];
     }
