@@ -332,7 +332,7 @@ processBtn.addEventListener('click', async () => {
 
     try {
       const result = await saveChunksToGithub(withEmbeddings, adminPasswordInput.value);
-      log(`Concluído! Salvo no GitHub com sucesso — total agora: ${result.totalChunks} trechos. A Vercel publica sozinha em ~1 minuto.`);
+      log(`Concluído! Salvo no GitHub com sucesso — ${result.newChunks} trechos, em ${result.filesWritten} arquivo(s). A Vercel publica sozinha em ~1 minuto.`);
     } catch (err) {
       if (/GITHUB_TOKEN|GITHUB_REPO/.test(err.message)) {
         log(`Salvamento automático não está configurado (${err.message}). Use o botão "Baixar knowledge.json (manual)" abaixo.`);
@@ -341,7 +341,7 @@ processBtn.addEventListener('click', async () => {
         await sleep(10000);
         try {
           const result = await saveChunksToGithub(withEmbeddings, adminPasswordInput.value);
-          log(`Concluído! Salvo no GitHub com sucesso — total agora: ${result.totalChunks} trechos.`);
+          log(`Concluído! Salvo no GitHub com sucesso — ${result.newChunks} trechos, em ${result.filesWritten} arquivo(s).`);
         } catch (err2) {
           log(`Falhou de novo (${err2.message}). Use o botão "Tentar salvar tudo no GitHub agora" abaixo, ou baixe manualmente.`);
         }
@@ -383,7 +383,7 @@ autoSaveBtn.addEventListener('click', async () => {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Erro ao salvar.');
-    autoSaveStatus.textContent = `Salvo! Base agora tem ${data.totalChunks} trechos no total. A Vercel vai publicar sozinha em ~1 minuto.`;
+    autoSaveStatus.textContent = `Salvo! ${data.newChunks} trechos em ${data.filesWritten} arquivo(s). A Vercel vai publicar sozinha em ~1 minuto.`;
     autoSaveStatus.style.color = '#3ddc73';
   } catch (err) {
     autoSaveStatus.textContent = `Erro: ${err.message}`;
